@@ -3,14 +3,18 @@ package com.intercom.video.twoway;
 //Android API imports
 
 import android.app.FragmentTransaction;
-import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.IBinder;
-import android.support.v7.app.ActionBarActivity;
+import android.support.annotation.NonNull;
+import android.support.v4.app.ActivityCompat;
+import android.support.v4.content.ContextCompat;
+import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -25,7 +29,6 @@ import com.intercom.video.twoway.Fragments.DeviceListFrag;
 import com.intercom.video.twoway.Fragments.SettingsFragment;
 import com.intercom.video.twoway.Interfaces.UpdateDeviceListInterface;
 import com.intercom.video.twoway.Models.ContactsEntity;
-import com.intercom.video.twoway.Network.NetworkDiscovery;
 import com.intercom.video.twoway.Network.Tcp;
 import com.intercom.video.twoway.Services.ListenerService;
 import com.intercom.video.twoway.Streaming.Audio;
@@ -36,6 +39,7 @@ import com.intercom.video.twoway.Utilities.SharedPreferenceAccessor;
 import com.intercom.video.twoway.Utilities.Utilities;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 //Local code imports
@@ -43,14 +47,19 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * @version 1.0.1
- *          Main activity of the Application.
+ * Main activity of the Application.
  * @Author Cole Risch, Sean Luther, Eric Van Gelder, Charles Toll, Alex Gusan, Robert Z.
- * @Implements DeviceListFrag.onListItemSelectedListener, SettingsFragment.ProfileControllerTransferInterface,UpdateDeviceListInterface
+ * @Implements DeviceListFrag.onListItemSelectedListener, SettingsFragment
+ * .ProfileControllerTransferInterface,UpdateDeviceListInterface
  */
-public class MainActivity extends ActionBarActivity implements
+public class MainActivity extends AppCompatActivity implements
         DeviceListFrag.onListItemSelectedListener, SettingsFragment.ProfileControllerTransferInterface,
         UpdateDeviceListInterface, View.OnTouchListener {
+    public static final int REQUEST_CODE = 221;
+    private static final int PERMISSIONS_REQUEST = 122;
+
     //--------------BEGIN VARIABLE DECLARATION---------------------------------
+
     public ProfileController profileController; // Object for sending and receiving profiles
     public SharedPreferenceAccessor sharedPreferenceAccessor;
     //used with callback from list fragment
@@ -60,7 +69,7 @@ public class MainActivity extends ActionBarActivity implements
     DeviceListFrag deviceListFrag = null;
     SettingsFragment settingsFrag = null;
     // used in logcat logging
-    public static String TAG = "Two-Way:";
+    public static final String TAG = "Two-Way:";
     Tcp tcpEngine = new Tcp(); //Object for Tcp class
     CameraJpegCapture cameraJpegCapture; //Object for CameraJpegCapture class
     public Utilities utilities; // Utilities object
@@ -79,7 +88,7 @@ public class MainActivity extends ActionBarActivity implements
     public static String[] mUrlList_as_StringArray;
     private Intent theService;
 
-    MainActivity mainActivity;
+    MainActivity mMainActivity;
 
     //-------------------BEGIN MAJOR LIFECYCLE METHODS--------------------------------
 
@@ -94,20 +103,101 @@ public class MainActivity extends ActionBarActivity implements
         super.onCreate(savedInstanceState);
         sharedPreferenceAccessor = new SharedPreferenceAccessor(this); //creates an accessor for our storage
         utilities = new Utilities(this); // instantiates our utilities object.
-
-        mainActivity=this;
-        mUrlList_as_StringArray = new String[0];
-
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);// ensures that the app does not let the screen blank out while active
-
-//        setContentView(R.layout.activity_main);
-        setContentView(R.layout.fragment_main);
-        startListenerService(); //starts the listener service
-
-
-        theService = new Intent(this, ListenerService.class);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);// ensures that the app does not
+        // let the screen blank out while active
+        if (!allPermissionsGranted()) {
+            getRuntimePermissions();
+        } else {
+            startAll();
+        }
 
     }
+
+    private boolean allPermissionsGranted() {
+        for (String permission : getRequiredPermissions()) {
+            if (!isPermissionGranted(this, permission)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void getRuntimePermissions() {
+        List<String> allNeededPermissions = new ArrayList<>();
+        for (String permission : getRequiredPermissions()) {
+            if (!isPermissionGranted(this, permission)) {
+                allNeededPermissions.add(permission);
+            }
+        }
+
+        if (!allNeededPermissions.isEmpty()) {
+            ActivityCompat.requestPermissions(
+                    this, allNeededPermissions.toArray(new String[0]), PERMISSIONS_REQUEST);
+        }
+    }
+
+    private void startAll() {
+        mMainActivity = this;
+        mUrlList_as_StringArray = new String[0];
+        setContentView(R.layout.fragment_main);
+        startListenerService(); //starts the listener service
+        theService = new Intent(this, ListenerService.class);
+    }
+
+    private String[] getRequiredPermissions() {
+        try {
+            PackageInfo info =
+                    this.getPackageManager()
+                            .getPackageInfo(this.getPackageName(), PackageManager.GET_PERMISSIONS);
+            String[] ps = info.requestedPermissions;
+            if (ps != null && ps.length > 0) {
+                return ps;
+            } else {
+                return new String[0];
+            }
+        } catch (Exception e) {
+            return new String[0];
+        }
+    }
+
+    public static boolean isPermissionGranted(Context context, String permission) {
+        if (ContextCompat.checkSelfPermission(context, permission)
+                == PackageManager.PERMISSION_GRANTED) {
+            Log.i(TAG, " TODEL Permission granted: " + permission);
+            return true;
+        }
+        Log.i(TAG, "Permission NOT granted: " + permission);
+        return false;
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        Log.d(TAG,
+                "onActivityResult() called with: requestCode = [" + requestCode + "], resultCode = [" + resultCode + "], data = [" + data + "]");
+        if (requestCode == REQUEST_CODE) {
+            if (resultCode == RESULT_OK) {
+                Log.d(TAG,
+                        "onActivityResult() called with:resultCode == RESULT_OK requestCode = [" + requestCode + "], resultCode = [" + resultCode + "], data = [" + data + "]");
+                startAll();
+
+            }
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
+        Log.d(" TODEL ", "onRequestPermissionsResult() called with: requestCode = [" + requestCode + "], " +
+                "permissions = [" + permissions + "], grantResults = [" + grantResults + "]");
+        if (allPermissionsGranted()) {
+//            initView();
+        }
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
+    }
+
 
     /**
      * @Author Cole Risch, Sean Luther, Eric Van Gelder, Charles Toll, Alex Gusan, Robert Z.
@@ -126,7 +216,7 @@ public class MainActivity extends ActionBarActivity implements
         if(profileController==null)
         if(listenerService!=null)
         {
-            profileController = new ProfileController(mainActivity, listenerService.mNetworkDiscovery.getMyIp(), listenerService.mNetworkDiscovery); //starts our profile controller
+            profileController = new ProfileController(mMainActivity, listenerService.getNetworkDiscovery().getMyIp(), listenerService.getNetworkDiscovery()); //starts our profile controller
             listenerService.setProfileController(profileController);
             // fragment code to allow for settings fragment and profile fragment
             deviceListFrag = new DeviceListFrag();
@@ -196,6 +286,8 @@ public class MainActivity extends ActionBarActivity implements
             case MotionEvent.ACTION_UP:
                 mic = false;
                 break;
+            default:
+                throw new IllegalStateException("Unexpected value: " + event.getAction());
         }
         return mic;
     }
@@ -372,7 +464,7 @@ public class MainActivity extends ActionBarActivity implements
                 return true;
 
             case R.id.action_find_peers:
-                mUrlList_asArrayList = listenerService.mNetworkDiscovery.getIpList();
+                mUrlList_asArrayList = listenerService.getNetworkDiscovery().getIpList();
 
                 // update initial list of discovered IPs
                 // also need to happen every time the view is called
@@ -402,6 +494,8 @@ public class MainActivity extends ActionBarActivity implements
             case R.id.checkBox:
                 mic = checked;
                 break;
+            default:
+                throw new IllegalStateException("Unexpected value: " + view.getId());
         }
     }
     //------------------BEGIN SERVICE METHODS-----------------------------------
@@ -422,7 +516,7 @@ public class MainActivity extends ActionBarActivity implements
 
             if(profileController==null)
             {
-                profileController = new ProfileController(mainActivity, listenerService.mNetworkDiscovery.getMyIp(), listenerService.mNetworkDiscovery); //starts our profile controller
+                profileController = new ProfileController(mMainActivity, listenerService.getNetworkDiscovery().getMyIp(), listenerService.getNetworkDiscovery()); //starts our profile controller
                 listenerService.setProfileController(profileController);
                 // fragment code to allow for settings fragment and profile fragment
                 deviceListFrag = new DeviceListFrag();

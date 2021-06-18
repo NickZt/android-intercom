@@ -1,13 +1,19 @@
 package com.intercom.video.twoway.Services;
 
 import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.content.res.Resources;
 import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.os.Binder;
+import android.os.Build;
 import android.os.IBinder;
+import android.support.v4.app.NotificationCompat;
 import android.util.Log;
 
 import com.intercom.video.twoway.Controllers.ProfileController;
@@ -25,29 +31,25 @@ import com.intercom.video.twoway.Utilities.Utilities;
  * by the android system.  Service starts on boot.  Network Discovery runs in this service so that the
  * device is discoverable at all times.
  */
-public class ListenerService extends Service 
-{
+public class ListenerService extends Service {
     private ProfileController profileController;
-    private Tcp serviceTcpEngine = new Tcp();
+    private final static int SERVICE_ID = 12345; // we don't use this but the service wants to be assigned an
     private boolean listeningForConnections = false;
-    private final int SERVICE_ID = 12345; // we don't use this but the service wants to be assigned an id when it is created
+    private final Tcp serviceTcpEngine = new Tcp();
+    // id when it is created
     private final IBinder mBinder = new LocalBinder();// Binder given to clients
-    ControlConstants constants = new ControlConstants();
-    public NetworkDiscovery mNetworkDiscovery; // Network Discovery Object
+    private NetworkDiscovery mNetworkDiscovery; // Network Discovery Object
 
     /**
-	 * Class used for the client Binder. Because we know this service always
-	 * runs in the same process as its clients, we don't need to deal with IPC.
-	 */
-	public class LocalBinder extends Binder 
-	{
-		public ListenerService getService()
-		{
-			// Return this instance of LocalService so clients can call public
-			// methods
-			return ListenerService.this;
-		}
-	}
+     * Lifecycle method that is called when the service is created. Note that the service icon
+     * and style are set in here.
+     */
+    @Override
+    public void onCreate() {
+
+        showNotification();
+        super.onCreate();
+    }
 
     /**
      * Lifecycle method that is called when service is to be started
@@ -58,40 +60,145 @@ public class ListenerService extends Service
      * @return
      */
     @Override
-	public int onStartCommand(Intent intent, int flags, int startId)
-	{
+	public int onStartCommand(Intent intent, int flags, int startId) {
         startListeningForConnections();
 
         Utilities u = new Utilities(this); //TODO: this should be passed the Utilities object from MainActivity
-        mNetworkDiscovery = new NetworkDiscovery(u);
-        mNetworkDiscovery.setupNetworkDiscovery();
+        setNetworkDiscovery(new NetworkDiscovery(u));
+        getNetworkDiscovery().setupNetworkDiscovery();
 
         // If we get killed, after returning from here, restart the service
-		return START_STICKY;
-	}
-
-	@Override
-	public IBinder onBind(Intent intent)
-	{
-		return mBinder;
+        return START_STICKY;
     }
 
+    @Override
+    public void onDestroy()
+    {
+        getNetworkDiscovery().stopNetworkDiscovery();
+        stopListeningForConnections();
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return mBinder;
+    }
 
     /**
-     * Lifecycle method that is called when the service is created. Note that the service icon
-     * and style are set in here.
+     * start listening for connections from other devices and decide what
+     * to do based on what command they send us.
+     * This is where we communicate back with the main activity via an intent
+     * and start the main activity if it is dead and start a video connection etc
      */
-    @Override
-	public void onCreate()
-	{
+    public void startListeningForConnections()
+    {
+        Thread listenForConnectionThread;
+        if(!listeningForConnections) {
+            listeningForConnections = true;
+            listenForConnectionThread = new Thread() {
+                @Override
+                public void run() {
+                    while (listeningForConnections) {
+                        try {
+                            int connectionStage = serviceTcpEngine.listenForConnection();
+
+                            // extract just the ip address from ip address and port combo string
+                            // this would be cooler if done with regular expressions
+                            String remoteIpAddress = serviceTcpEngine.lastRemoteIpAddress;
+                            String newRemoteAddress = remoteIpAddress.substring(1, remoteIpAddress.indexOf(":"));
+
+                            // tells us to connect to the remote server and start feeding it our video
+                            // then start our own remote server and tel the other device to connect
+                            if (connectionStage == 1) {
+                                sendCommandToActivity(ControlConstants.INTENT_COMMAND_START_STREAMING_FIRST,
+                                        newRemoteAddress);
+                            }
+
+                            // tells us to connect to the remote server, this happens second after we have
+                            // already started our own server and told them to connect
+                            // the difference between this and INTENT_COMMAND_START_STREAMING_FIRST is that
+                            // we dont start a new server and tell the other to connect because we already
+                            // did that
+                            if (connectionStage == 2) {
+                                sendCommandToActivity(ControlConstants.INTENT_COMMAND_START_STREAMING_SECOND,
+                                        newRemoteAddress);
+                            }
+
+                            if (connectionStage == NetworkConstants.PROFILE) {
+                                // profileController can be null if service started on boot
+                                try {
+                                    profileController.sendDeviceInfoByIp(newRemoteAddress);
+                                } catch (Exception e) {
+                                    Log.e("TAG", "run: ", e);
+                                }
+                            }
+                        } catch (Exception e) {
+                            Log.e("TAG", "run: ", e);
+                        }
+                        // now just close the connection so we can listen for more
+                        serviceTcpEngine.closeConnection();
+                    }
+                }
+            };
+            listenForConnectionThread.start();
+        }
+    }
+
+    public NetworkDiscovery getNetworkDiscovery() {
+        return mNetworkDiscovery;
+    }
+
+    public void setNetworkDiscovery(NetworkDiscovery networkDiscovery) {
+        mNetworkDiscovery = networkDiscovery;
+    }
+
+    private void showNotification() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startNewForeground();
+        } else {
+            startOldForeground();
+
+        }
+
+
+    }
+
+    private void startNewForeground() {
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
+            String NOTIFICATION_CHANNEL_ID = "om.personal.audiostream.service";
+            String channelName = "My Background Service";
+            NotificationChannel chan = new NotificationChannel(NOTIFICATION_CHANNEL_ID, channelName,
+                    NotificationManager.IMPORTANCE_NONE);
+            chan.setLightColor(Color.BLUE);
+            chan.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
+            NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            assert manager != null;
+            manager.createNotificationChannel(chan);
+
+            NotificationCompat.Builder notificationBuilder = new NotificationCompat.Builder(this,
+                    NOTIFICATION_CHANNEL_ID);
+            Notification notification = notificationBuilder.setOngoing(true)
+                    .setContentTitle("listener service")
+                    .setContentText("listener service")
+                    .setTicker("listener service")
+                    .setSmallIcon(R.drawable.service_icon)
+                    .setPriority(NotificationManager.IMPORTANCE_MIN)
+                    .setCategory(Notification.CATEGORY_SERVICE)
+                    .setAutoCancel(true)
+                    .setWhen(System.currentTimeMillis())
+                    .build();
+            startForeground(SERVICE_ID, notification);
+        }
+    }
+
+    private void startOldForeground() {
+        Resources res = this.getResources();
         Intent notificationIntent = new Intent(this, MainActivity.class);
+        Notification.Builder builder = new Notification.Builder(this);
         PendingIntent contentIntent = PendingIntent.getActivity(this,
                 12345, notificationIntent,
                 PendingIntent.FLAG_CANCEL_CURRENT);
-
-        Resources res = this.getResources();
-        Notification.Builder builder = new Notification.Builder(this);
-
         builder.setContentIntent(contentIntent)
                 .setSmallIcon(R.drawable.service_icon)
                 .setLargeIcon(BitmapFactory.decodeResource(res
@@ -102,19 +209,8 @@ public class ListenerService extends Service
                 .setContentTitle("listener service")
                 .setContentText("listener service");
         Notification n = builder.build();
-
-
         startForeground(SERVICE_ID, n);
 
-
-		super.onCreate();
-	}
-
-    @Override
-    public void onDestroy()
-    {
-        mNetworkDiscovery.stopNetworkDiscovery();
-        stopListeningForConnections();
     }
 
     /**
@@ -127,66 +223,16 @@ public class ListenerService extends Service
     }
 
     /**
-     * start listening for connections from other devices and decide what
-     * to do based on what command they send us.
-     * This is where we communicate back with the main activity via an intent
-     * and start the main activity if it is dead and start a video connection etc
+     * Class used for the client Binder. Because we know this service always
+     * runs in the same process as its clients, we don't need to deal with IPC.
      */
-    public void startListeningForConnections()
-    {
-        Thread listenForConnectionThread;
-        if(!listeningForConnections)
-        {
-            listeningForConnections = true;
-            listenForConnectionThread = new Thread()
-            {
-                public void run()
-                {
-                    while (listeningForConnections)
-                    {
-                        try
-                        {
-                            int connectionStage = serviceTcpEngine.listenForConnection();
-
-                            // extract just the ip address from ip address and port combo string
-                            // this would be cooler if done with regular expressions
-                            String RemoteAddress = serviceTcpEngine.lastRemoteIpAddress;
-                            String newRemoteAddress = RemoteAddress.substring(1, RemoteAddress.indexOf(":"));
-
-                            // tells us to connect to the remote server and start feeding it our video
-                            // then start our own remote server and tel the other device to connect
-                            if (connectionStage == 1)
-                                sendCommandToActivity(constants.INTENT_COMMAND_START_STREAMING_FIRST, newRemoteAddress);
-
-                            // tells us to connect to the remote server, this happens second after we have already started our own server and told them to connect
-                            // the difference between this and INTENT_COMMAND_START_STREAMING_FIRST is that we dont start a new server and tell the other to connect because we already did that
-                            if (connectionStage == 2)
-                                sendCommandToActivity(constants.INTENT_COMMAND_START_STREAMING_SECOND, newRemoteAddress);
-
-                            if (connectionStage == NetworkConstants.PROFILE)
-                            {
-                                // profileController can be null if service started on boot
-                                try
-                                {
-                                    profileController.sendDeviceInfoByIp(newRemoteAddress);
-                                } catch (Exception e)
-                                {
-
-                                }
-                            }
-                        }
-                        catch(Exception e)
-                        {
-
-                        }
-                        // now just close the connection so we can listen for more
-                        serviceTcpEngine.closeConnection();
-                    }
-                }
-            };
-            listenForConnectionThread.start();
-        }
-    }
+    public class LocalBinder extends Binder {
+        public ListenerService getService() {
+            // Return this instance of LocalService so clients can call public
+			// methods
+			return ListenerService.this;
+		}
+	}
 
     /**
      * send a command to the activity
